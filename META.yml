@@ -21,14 +21,14 @@ name: CPAN-Patches-Plugin-Debian
 provides:
   CPAN::Patches::Plugin::Debian:
     file: lib/CPAN/Patches/Plugin/Debian.pm
-    version: 0.01
+    version: 0.02
   CPAN::Patches::Plugin::Debian::SPc:
     file: lib/CPAN/Patches/Plugin/Debian/SPc.pm
     version: 0.01
 requires:
   CPAN::Patches: 0
   Carp: 0
-  Dpkg::Version: 0
+  Debian::Dpkg::Version: 0
   File::Basename: 0
   File::Copy: 0
   File::Path: 2.01
@@ -49,4 +49,4 @@ resources:
   bugtracker: http://github.com/jozef/CPAN-Patches-Plugin-Debian/issues
   license: http://dev.perl.org/licenses/
   repository: git://github.com/jozef/CPAN-Patches-Plugin-Debian.git
-version: 0.01
+version: 0.02
