@@ -11,10 +11,11 @@ my $builder = Module::Build::SysPath->new(
     dist_version_from => 'lib/CPAN/Patches/Plugin/Debian.pm',
     
     configure_requires => {
-        'Module::Build::SysPath' => 0.13,
+        'Module::Build::SysPath' => 0.16,
+        'Module::Build' => '0.36',
     },
     build_requires => {
-        'Module::Build::SysPath' => 0.13,
+        'Module::Build::SysPath' => 0.16,
         'Test::More'             => 0,
     },
     requires => {
@@ -32,7 +33,7 @@ my $builder = Module::Build::SysPath->new(
         'Storable'                => 0,
         'Test::Deep::NoTest'      => 0,
         'Debian::Dpkg::Version'   => 0,
-        'CPAN::Patches'           => 0,
+        'CPAN::Patches'           => 0.04,    # added get_module_folder()
         'File::Basename'          => 0,
         'Path::Class'             => 0,
         'List::MoreUtils'         => 0,
@@ -44,7 +45,6 @@ my $builder = Module::Build::SysPath->new(
     ],
     add_to_cleanup => [ 'CPAN-Patches-Plugin-Debian-*' ],
     create_readme  => 1,
-    sign           => 1,
     meta_merge => {
         resources => {
             repository => 'git://github.com/jozef/CPAN-Patches-Plugin-Debian.git',

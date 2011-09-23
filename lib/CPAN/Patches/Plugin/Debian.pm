@@ -1,32 +1,9 @@
 package CPAN::Patches::Plugin::Debian;
 
-=head1 NAME
-
-CPAN::Patches::Plugin::Debian - patch CPAN distributions Debian package
-
-=head1 SYNOPSIS
-
-    cd Some-Distribution
-    dh-make-perl
-    cpan-patches list
-    cpan-patches update-debian
-    cpan-patches --patch-set $HOME/cpan-patches-set list
-    cpan-patches --patch-set $HOME/cpan-patches-set update-debian
-
-=head1 DESCRIPTION
-
-This module allows to apply custom patches to the CPAN distributions
-Debian package.
-
-See L<http://github.com/jozef/CPAN-Patches-Debian-Set> for example generated
-Debian patches set folder.
-
-=cut
-
 use warnings;
 use strict;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use Moose::Role;
 
@@ -40,21 +17,8 @@ use File::Copy 'copy';
 use Parse::Deb::Control '0.03';
 use File::chdir;
 use Debian::Dpkg::Version 'version_compare';
-use CPAN::Patches;
+use CPAN::Patches 0.04;
 use File::Basename 'basename';
-
-=head1 METHODS
-
-=head2 update_debian
-
-Copy all patches and F<series> file from F<.../module-name/patches/> to
-F<debian/patches> folder. If there are any patches add C<quilt> as
-C<Build-Depends-Indep> and runs adds C<--with quilt> to F<debian/rules>.
-Adds dependencies from F<.../module-name/debian>, adds usage of C<xvfb-run>
-if the modules requires X and renames C<s/lib(.*)-perl/$1/> if the distribution
-is an application.
-
-=cut
 
 sub update_debian {
     my $self = shift;
@@ -71,7 +35,7 @@ sub update_debian {
 
     my $meta     = $self->read_meta($path);
     my $name     = $self->clean_meta_name($meta->{'name'}) or croak 'no name in meta';
-    my $debian_data = $self->read_debian($name);
+    my $debian_data = $self->read_debian_control($name);
     my $deb_control = Parse::Deb::Control->new([$debian_control_filename]);
     
     die $name.' has disabled auto build'
@@ -79,13 +43,16 @@ sub update_debian {
     
     my @series = $self->get_patch_series($name);
     if (@series) {
+		# apply patches to the source (quilt 3.0 source format)
+		$self->patch($path);
+		
         make_path($debian_patches_path)
             if not -d $debian_patches_path;
             
         foreach my $patch_filename (@series) {
             print 'copy ', $patch_filename,' to ', $debian_patches_path, "\n"
                 if $self->verbose;
-            copy($patch_filename, $debian_patches_path);
+            copy($patch_filename, $debian_patches_path) or die $!;
         }
         IO::Any->spew(
 			[$debian_patches_path, 'series'],
@@ -99,11 +66,24 @@ sub update_debian {
     # write new debian/rules
     IO::Any->spew(
         [$debian_path, 'rules'],
-        "#!/usr/bin/make -f\n\n%:\n	"
-        .($debian_data->{'X'} ? 'xvfb-run -a ' : '')
-        .'dh '.(@series ? '--with quilt ': '').'$@'
+        "#!/usr/bin/make -f\n\n"
+        .($debian_data->{'X'} ? "override_dh_auto_test:\n	xvfb-run -a dh_auto_test\n\n" : '')
+		."%:\n	"
+        .'dh $@'
         ."\n"
     );
+	
+	# if there are patches set the format to quilt 3.0
+	if (@series) {
+		my $debian_source_folder = File::Spec->catdir($debian_path, 'source');
+		mkdir($debian_source_folder)
+			if (not -d $debian_source_folder);
+		
+		IO::Any->spew(
+			[$debian_path, 'source', 'format'],
+			"3.0 (quilt)\n",
+		);
+	}
     
     # update dependencies
     my $cpanp = CPAN::Patches->new;
@@ -116,7 +96,7 @@ sub update_debian {
             $new_dep->{'xvfb'}  = '';
         }
         if (@series and ($dep_type eq 'Build-Depends-Indep')) {
-            $new_dep->{'quilt'} = '';
+            $new_dep->{'debhelper'} = '(>= 7.0.50~)';
         }
         
         # update if dependencies if needed
@@ -139,38 +119,31 @@ sub update_debian {
     
     if (my $app_name = $debian_data->{'App'}) {
         local $CWD = $debian_path;
-        my $lib_name = 'lib'.$name.'-perl';
+        my $lib_name = '(?:lib)?'.$name.'-perl';    # "(?:lib)?" becasue libwww-perl has no "double lib" prefix
         system(q{perl -lane 's/}.$lib_name.q{/}.$app_name.q{/;print' -i *});
         foreach my $filename (glob($lib_name.'*')) {
             rename($filename, $app_name.substr($filename, 0-length($lib_name)));
         }
     }
     
+	# copy all post/pre inst
+	foreach my $inst ($self->debian_inst_script_names) {
+		my $src = File::Spec->catfile($self->get_module_folder($name), 'debian', $inst);
+		my $dst = File::Spec->catfile($debian_path, $inst);
+		
+		if (-r $src) {
+			print 'copy ', $src,' to ', $dst, "\n"
+				if $self->verbose;
+			copy($src, $dst) or die $!;
+		}
+	}
     
     return;
 }
 
-=head1 cpan-patches CMD
-
-=head2 cmd_update_debian
-
-See L</update_debian>.
-
-=cut
-
 sub cmd_update_debian {
 	shift->update_debian();
 }
-
-
-=head1 INTERNAL METHODS
-
-=head2 merge_debian_versions($v1, $v2)
-
-Merges dependecies from C<$v1> and C<$v2> by keeping the ones that has
-higher version (if the same).
-
-=cut
 
 sub merge_debian_versions {
     my $self = shift;
@@ -208,13 +181,6 @@ sub merge_debian_versions {
 	return $versions1;    
 }
 
-=head2 get_deb_package_names($control, $key)
-
-Return hash with package name as key and version string as value for
-given C<$key> in Debian C<$control> file.
-
-=cut
-
 sub get_deb_package_names {
     my $self    = shift;
     my $control = shift or croak 'pass control object';
@@ -235,30 +201,18 @@ sub get_deb_package_names {
 	;
 }
 
-=head2 read_debian($name)
-
-Read F<.../module-name/debian> for given C<$name>.
-
-=cut
-
-sub read_debian {
+sub read_debian_control {
     my $self = shift;
     my $name = shift or croak 'pass name param';
     
-    my $debian_filename  = File::Spec->catfile($self->patch_set_location, $name, 'debian');
+    my $debian_filename  = File::Spec->catfile($self->get_module_folder($name), 'debian', 'control');
     return {}
         if not -r $debian_filename;
     
-    return $self->decode_debian([$debian_filename]);
+    return $self->decode_debian_control([$debian_filename]);
 }
 
-=head2 decode_debian($src)
-
-Parses F<.../module-name/debian> into a hash. Returns hash reference.
-
-=cut
-
-sub decode_debian {
+sub decode_debian_control {
     my $self = shift;
     my $src  = shift or die 'pass source';
     
@@ -297,12 +251,6 @@ sub decode_debian {
     };
 }
 
-=head2 encode_debian($data)
-
-Return F<.../module-name/debian> content string generated from C<$data>.
-
-=cut
-
 sub encode_debian {
     my $self = shift;
     my $data = shift;
@@ -331,10 +279,85 @@ sub encode_debian {
     return $content;
 }
 
+sub debian_inst_script_names {
+	return qw{
+		preinst
+		postinst
+		prerm
+		postrm
+	};
+}
+
 1;
 
 
 __END__
+
+=head1 NAME
+
+CPAN::Patches::Plugin::Debian - patch CPAN distributions Debian package
+
+=head1 SYNOPSIS
+
+    cd Some-Distribution
+    dh-make-perl
+    cpan-patches list
+    cpan-patches update-debian
+    cpan-patches --patch-set $HOME/cpan-patches-set list
+    cpan-patches --patch-set $HOME/cpan-patches-set update-debian
+
+=head1 DESCRIPTION
+
+This module allows to apply custom patches to the CPAN distributions
+Debian package.
+
+See L<http://github.com/jozef/CPAN-Patches-Debian-Set> for example generated
+Debian patches set folder.
+
+=head1 METHODS
+
+=head2 update_debian
+
+Copy all patches and F<series> file from F<.../module-name/patches/> to
+F<debian/patches> folder. If there are any patches add C<quilt> as
+C<Build-Depends-Indep> and runs adds C<--with quilt> to F<debian/rules>.
+Adds dependencies from F<.../module-name/debian>, adds usage of C<xvfb-run>
+if the modules requires X and renames C<s/lib(.*)-perl/$1/> if the distribution
+is an application.
+
+=head1 cpan-patches command
+
+=head2 cmd_update_debian
+
+See L</update_debian>.
+
+=head1 INTERNAL METHODS
+
+=head2 merge_debian_versions($v1, $v2)
+
+Merges dependencies from C<$v1> and C<$v2> by keeping the ones that has
+higher version (if the same).
+
+=head2 get_deb_package_names($control, $key)
+
+Return hash with package name as key and version string as value for
+given C<$key> in Debian C<$control> file.
+
+=head2 read_debian_control($name)
+
+Read F<.../module-name/debian> for given C<$name>.
+
+=head2 decode_debian_control($src)
+
+Parses F<.../module-name/debian> into a hash. Returns hash reference.
+
+=head2 encode_debian($data)
+
+Return F<.../module-name/debian> content string generated from C<$data>.
+
+=head2 debian_inst_script_names
+
+Returns array of pre/post installation file names.
 
 =head1 AUTHOR
 
